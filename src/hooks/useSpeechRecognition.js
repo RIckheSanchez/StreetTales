@@ -1,75 +1,81 @@
 import {useState, useEffect, useRef, useCallback} from 'react';
-import Voice from '@react-native-voice/voice';
+import {NativeModules, NativeEventEmitter} from 'react-native';
 
-const SILENCE_TIMEOUT_MS = 3000;
+const {SpeechModule} = NativeModules;
+const emitter = SpeechModule ? new NativeEventEmitter(SpeechModule) : null;
 
 export function useSpeechRecognition() {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [error, setError] = useState(null);
-  const silenceTimer = useRef(null);
-  // ref always holds the latest transcript — safe to read inside async callbacks
   const transcriptRef = useRef('');
+  const silenceTimer = useRef(null);
 
   useEffect(() => {
-    Voice.onSpeechResults = e => {
-      const text = e.value?.[0] ?? '';
-      transcriptRef.current = text;
-      setTranscript(text);
-      resetSilenceTimer();
-    };
-    Voice.onSpeechPartialResults = e => {
-      const text = e.value?.[0] ?? '';
-      transcriptRef.current = text;
-      setTranscript(text);
-      resetSilenceTimer();
-    };
-    Voice.onSpeechError = e => {
-      setError(e.error?.message ?? 'Speech error');
-      setIsListening(false);
-    };
-    Voice.onSpeechEnd = () => {
-      setIsListening(false);
-    };
+    if (!emitter) {
+      console.warn('[Speech] SpeechModule not available');
+      return;
+    }
 
-    return () => {
-      Voice.destroy().then(Voice.removeAllListeners);
-      clearTimeout(silenceTimer.current);
-    };
+    const subs = [
+      emitter.addListener('SpeechStart', () => {
+        console.log('[Speech] started');
+        setIsListening(true);
+      }),
+      emitter.addListener('SpeechEnd', () => {
+        console.log('[Speech] ended');
+        setIsListening(false);
+        clearTimeout(silenceTimer.current);
+      }),
+      emitter.addListener('SpeechResult', matches => {
+        const text = Array.isArray(matches) ? matches[0] : matches;
+        console.log('[Speech] result:', text);
+        if (text) {
+          transcriptRef.current = text;
+          setTranscript(text);
+        }
+      }),
+      emitter.addListener('SpeechError', msg => {
+        console.log('[Speech] error:', msg);
+        setError(msg);
+        setIsListening(false);
+        clearTimeout(silenceTimer.current);
+      }),
+    ];
+
+    return () => subs.forEach(s => s.remove());
   }, []);
 
-  function resetSilenceTimer() {
-    clearTimeout(silenceTimer.current);
-    silenceTimer.current = setTimeout(() => {
-      stopListening();
-    }, SILENCE_TIMEOUT_MS);
-  }
-
   const startListening = useCallback(async () => {
+    if (!SpeechModule) {
+      setError('SpeechModule 未加载');
+      return;
+    }
     try {
       setError(null);
       setTranscript('');
       transcriptRef.current = '';
-      setIsListening(true);
-      await Voice.start('zh-CN');
-      resetSilenceTimer();
+      console.log('[Speech] calling startListening');
+      await SpeechModule.startListening('zh-CN');
     } catch (e) {
+      console.log('[Speech] startListening error:', e.message);
       setError(e.message);
       setIsListening(false);
     }
   }, []);
 
-  // Returns the final transcript so callers don't rely on stale state
   const stopListening = useCallback(async () => {
+    if (!SpeechModule) return '';
     try {
       clearTimeout(silenceTimer.current);
-      await Voice.stop();
+      await SpeechModule.stopListening();
       setIsListening(false);
-      // Give the engine up to 600ms to fire its last onSpeechResults
-      await new Promise(resolve => setTimeout(resolve, 600));
+      // Wait for final result event
+      await new Promise(resolve => setTimeout(resolve, 800));
+      console.log('[Speech] stopListening, transcript:', transcriptRef.current);
       return transcriptRef.current;
     } catch (e) {
-      setError(e.message);
+      console.log('[Speech] stopListening error:', e.message);
       return transcriptRef.current;
     }
   }, []);

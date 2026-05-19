@@ -53,7 +53,7 @@ export default function MainScreen({navigation}) {
 
   const autoCloseTimer = useRef(null);
 
-  const {isListening, transcript, startListening, stopListening} =
+  const {isListening, transcript, startListening, stopListening, error: voiceError} =
     useSpeechRecognition();
   const latestTranscript = useRef('');
   const {speak, stop, pause, resume, isSpeaking, isPaused, progress} = useTTS();
@@ -66,6 +66,15 @@ export default function MainScreen({navigation}) {
   useEffect(() => {
     if (transcript) latestTranscript.current = transcript;
   }, [transcript]);
+
+  // Show voice errors on screen so we can diagnose
+  useEffect(() => {
+    if (voiceError) {
+      console.log('[MainScreen] voiceError:', voiceError);
+      setStatusMessage(`语音错误: ${voiceError}`);
+      setAppStatus(STATUS.IDLE);
+    }
+  }, [voiceError]);
 
   async function requestPermissions() {
     if (Platform.OS !== 'android') {

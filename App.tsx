@@ -1,8 +1,14 @@
 import React from 'react';
+import {LogBox} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {createStackNavigator} from '@react-navigation/stack';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {GestureHandlerRootView} from 'react-native-gesture-handler';
+
+LogBox.ignoreLogs([
+  'new NativeEventEmitter',
+  'EventEmitter.removeListener',
+]);
 import {StyleSheet} from 'react-native';
 
 import MainScreen from './src/screens/MainScreen';
