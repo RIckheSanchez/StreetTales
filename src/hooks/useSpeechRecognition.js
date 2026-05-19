@@ -8,15 +8,19 @@ export function useSpeechRecognition() {
   const [transcript, setTranscript] = useState('');
   const [error, setError] = useState(null);
   const silenceTimer = useRef(null);
+  // ref always holds the latest transcript — safe to read inside async callbacks
+  const transcriptRef = useRef('');
 
   useEffect(() => {
     Voice.onSpeechResults = e => {
       const text = e.value?.[0] ?? '';
+      transcriptRef.current = text;
       setTranscript(text);
       resetSilenceTimer();
     };
     Voice.onSpeechPartialResults = e => {
       const text = e.value?.[0] ?? '';
+      transcriptRef.current = text;
       setTranscript(text);
       resetSilenceTimer();
     };
@@ -45,6 +49,7 @@ export function useSpeechRecognition() {
     try {
       setError(null);
       setTranscript('');
+      transcriptRef.current = '';
       setIsListening(true);
       await Voice.start('zh-CN');
       resetSilenceTimer();
@@ -54,15 +59,20 @@ export function useSpeechRecognition() {
     }
   }, []);
 
+  // Returns the final transcript so callers don't rely on stale state
   const stopListening = useCallback(async () => {
     try {
       clearTimeout(silenceTimer.current);
       await Voice.stop();
       setIsListening(false);
+      // Give the engine up to 600ms to fire its last onSpeechResults
+      await new Promise(resolve => setTimeout(resolve, 600));
+      return transcriptRef.current;
     } catch (e) {
       setError(e.message);
+      return transcriptRef.current;
     }
   }, []);
 
-  return {isListening, transcript, startListening, stopListening, error};
+  return {isListening, transcript, transcriptRef, startListening, stopListening, error};
 }

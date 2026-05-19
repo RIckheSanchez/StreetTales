@@ -55,12 +55,17 @@ export default function MainScreen({navigation}) {
 
   const {isListening, transcript, startListening, stopListening} =
     useSpeechRecognition();
+  const latestTranscript = useRef('');
   const {speak, stop, pause, resume, isSpeaking, isPaused, progress} = useTTS();
   const {latitude, longitude} = useLocation();
 
   useEffect(() => {
     requestPermissions();
   }, []);
+
+  useEffect(() => {
+    if (transcript) latestTranscript.current = transcript;
+  }, [transcript]);
 
   async function requestPermissions() {
     if (Platform.OS !== 'android') {
@@ -107,9 +112,10 @@ export default function MainScreen({navigation}) {
 
   const handlePressOut = useCallback(async () => {
     if (appStatus !== STATUS.LISTENING) return;
-    await stopListening();
-    await processQuery(transcript || '');
-  }, [appStatus, stopListening, transcript]);
+    // stopListening returns the final transcript after waiting for last results
+    const finalText = await stopListening();
+    await processQuery(finalText || latestTranscript.current || '');
+  }, [appStatus, stopListening]);
 
   async function processQuery(question) {
     if (!question.trim()) {
