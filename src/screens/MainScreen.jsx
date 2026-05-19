@@ -4,19 +4,22 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  TouchableWithoutFeedback,
+  TextInput,
+  Modal,
   PermissionsAndroid,
   Platform,
   Alert,
+  KeyboardAvoidingView,
+  ScrollView,
 } from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 
 import CameraView from '../components/CameraView';
-import VoiceButton from '../components/VoiceButton';
 import StoryOverlay from '../components/StoryOverlay';
 import LoadingIndicator from '../components/LoadingIndicator';
 
-import {useSpeechRecognition} from '../hooks/useSpeechRecognition';
 import {useTTS} from '../hooks/useTTS';
 import {useLocation} from '../hooks/useLocation';
 
@@ -31,7 +34,6 @@ import {saveStory} from '../storage/storyStorage';
 
 const STATUS = {
   IDLE: 'idle',
-  LISTENING: 'listening',
   IDENTIFYING: 'identifying',
   SEARCHING: 'searching',
   GENERATING: 'generating',
@@ -40,41 +42,34 @@ const STATUS = {
 
 const OVERLAY_AUTO_CLOSE_MS = 10000;
 
+const QUICK_QUESTIONS = [
+  '右边那栋楼有什么故事？',
+  '左边那个建筑是什么来历？',
+  '前面那个地标有什么历史？',
+  '这附近有什么有名的建筑吗？',
+  '这是什么地方？',
+];
+
 export default function MainScreen({navigation}) {
   const insets = useSafeAreaInsets();
   const cameraRef = useRef(null);
 
   const [appStatus, setAppStatus] = useState(STATUS.IDLE);
-  const [statusMessage, setStatusMessage] = useState('长按麦克风，开始提问');
+  const [statusMessage, setStatusMessage] = useState('点麦克风，开始提问');
   const [currentBuilding, setCurrentBuilding] = useState(null);
   const [currentStory, setCurrentStory] = useState('');
   const [overlayVisible, setOverlayVisible] = useState(false);
   const [permissionsGranted, setPermissionsGranted] = useState(false);
+  const [inputVisible, setInputVisible] = useState(false);
+  const [inputText, setInputText] = useState('');
 
   const autoCloseTimer = useRef(null);
-
-  const {isListening, transcript, startListening, stopListening, error: voiceError} =
-    useSpeechRecognition();
-  const latestTranscript = useRef('');
   const {speak, stop, pause, resume, isSpeaking, isPaused, progress} = useTTS();
   const {latitude, longitude} = useLocation();
 
   useEffect(() => {
     requestPermissions();
   }, []);
-
-  useEffect(() => {
-    if (transcript) latestTranscript.current = transcript;
-  }, [transcript]);
-
-  // Show voice errors on screen so we can diagnose
-  useEffect(() => {
-    if (voiceError) {
-      console.log('[MainScreen] voiceError:', voiceError);
-      setStatusMessage(`语音错误: ${voiceError}`);
-      setAppStatus(STATUS.IDLE);
-    }
-  }, [voiceError]);
 
   async function requestPermissions() {
     if (Platform.OS !== 'android') {
@@ -90,13 +85,12 @@ export default function MainScreen({navigation}) {
       results[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === 'granted';
     setPermissionsGranted(granted);
     if (!granted) {
-      Alert.alert('权限不足', '需要摄像头和麦克风权限才能使用 StreetTales');
+      Alert.alert('权限不足', '需要摄像头权限才能使用 StreetTales');
     }
   }
 
   useEffect(() => {
     if (!isSpeaking && !isPaused && appStatus === STATUS.SPEAKING) {
-      // TTS finished naturally
       scheduleAutoClose();
     }
   }, [isSpeaking, isPaused]);
@@ -106,37 +100,38 @@ export default function MainScreen({navigation}) {
     autoCloseTimer.current = setTimeout(() => {
       setOverlayVisible(false);
       setAppStatus(STATUS.IDLE);
-      setStatusMessage('长按麦克风，开始提问');
+      setStatusMessage('点麦克风，开始提问');
     }, OVERLAY_AUTO_CLOSE_MS);
   }
 
-  const handlePressIn = useCallback(async () => {
+  function handleMicPress() {
     if (appStatus !== STATUS.IDLE) return;
     stop();
     setOverlayVisible(false);
-    setAppStatus(STATUS.LISTENING);
-    setStatusMessage('在听...');
-    await startListening();
-  }, [appStatus, stop, startListening]);
+    setInputText('');
+    setInputVisible(true);
+  }
 
-  const handlePressOut = useCallback(async () => {
-    if (appStatus !== STATUS.LISTENING) return;
-    // stopListening returns the final transcript after waiting for last results
-    const finalText = await stopListening();
-    await processQuery(finalText || latestTranscript.current || '');
-  }, [appStatus, stopListening]);
+  function handleQuickQuestion(q) {
+    setInputVisible(false);
+    processQuery(q);
+  }
+
+  function handleCustomSubmit() {
+    const q = inputText.trim();
+    setInputVisible(false);
+    if (q) processQuery(q);
+  }
 
   async function processQuery(question) {
     if (!question.trim()) {
-      setAppStatus(STATUS.IDLE);
-      setStatusMessage('没有听清楚，请再试一次');
+      setStatusMessage('请输入问题后再试');
       return;
     }
 
     setStatusMessage(question);
 
     try {
-      // Step a: Capture + identify
       setAppStatus(STATUS.IDENTIFYING);
       const photo = await cameraRef.current?.takeSnapshot();
       if (!photo) throw new Error('Camera snapshot failed');
@@ -163,7 +158,6 @@ export default function MainScreen({navigation}) {
 
       setCurrentBuilding(resolvedBuilding);
 
-      // Step b: Wikipedia search (parallel)
       setAppStatus(STATUS.SEARCHING);
       const keyword = resolvedBuilding?.searchKeyword ?? resolvedBuilding?.name;
       const [wikiByName, nearbyPlaces] = await Promise.all([
@@ -182,7 +176,6 @@ export default function MainScreen({navigation}) {
         return;
       }
 
-      // Step c: Generate story
       setAppStatus(STATUS.GENERATING);
       const rawStory = await generateStory(resolvedBuilding, wikiContent, question);
       if (!rawStory) throw new Error('Story generation failed');
@@ -193,7 +186,6 @@ export default function MainScreen({navigation}) {
       setAppStatus(STATUS.SPEAKING);
       setStatusMessage('');
 
-      // Step d: Speak + save
       speak(formattedStory);
 
       await saveStory({
@@ -243,11 +235,8 @@ export default function MainScreen({navigation}) {
   }
 
   function handleOverlayTap() {
-    if (isSpeaking) {
-      pause();
-    } else if (isPaused) {
-      resume();
-    }
+    if (isSpeaking) pause();
+    else if (isPaused) resume();
   }
 
   function handleOverlayClose() {
@@ -255,31 +244,25 @@ export default function MainScreen({navigation}) {
     clearTimeout(autoCloseTimer.current);
     setOverlayVisible(false);
     setAppStatus(STATUS.IDLE);
-    setStatusMessage('长按麦克风，开始提问');
+    setStatusMessage('点麦克风，开始提问');
   }
 
   const loadingPhase =
-    appStatus === STATUS.IDENTIFYING
-      ? 'identifying'
-      : appStatus === STATUS.SEARCHING
-      ? 'searching'
-      : appStatus === STATUS.GENERATING
-      ? 'generating'
-      : null;
+    appStatus === STATUS.IDENTIFYING ? 'identifying' :
+    appStatus === STATUS.SEARCHING   ? 'searching' :
+    appStatus === STATUS.GENERATING  ? 'generating' : null;
 
   return (
     <View style={styles.root}>
       {permissionsGranted && <CameraView ref={cameraRef} />}
 
-      {/* Top status bar */}
+      {/* Top status */}
       <View style={[styles.topBar, {top: insets.top + 8}]}>
         {loadingPhase ? (
           <LoadingIndicator phase={loadingPhase} />
         ) : statusMessage ? (
           <View style={styles.statusPill}>
-            <Text style={styles.statusText} numberOfLines={2}>
-              {statusMessage}
-            </Text>
+            <Text style={styles.statusText} numberOfLines={2}>{statusMessage}</Text>
           </View>
         ) : null}
       </View>
@@ -293,11 +276,12 @@ export default function MainScreen({navigation}) {
           <Text style={styles.historyLabel}>历史</Text>
         </TouchableOpacity>
 
-        <VoiceButton
-          isListening={isListening}
-          onPressIn={handlePressIn}
-          onPressOut={handlePressOut}
-        />
+        <TouchableOpacity
+          style={[styles.micBtn, appStatus !== STATUS.IDLE && styles.micBtnDisabled]}
+          onPress={handleMicPress}
+          activeOpacity={0.8}>
+          <Icon name="mic" size={36} color="#fff" />
+        </TouchableOpacity>
 
         <View style={styles.spacer} />
       </View>
@@ -314,6 +298,58 @@ export default function MainScreen({navigation}) {
         onPauseResume={handleOverlayTap}
         onClose={handleOverlayClose}
       />
+
+      {/* Question input modal */}
+      <Modal
+        visible={inputVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setInputVisible(false)}>
+        <TouchableWithoutFeedback onPress={() => setInputVisible(false)}>
+          <View style={styles.modalBackdrop} />
+        </TouchableWithoutFeedback>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalSheet}>
+          <Text style={styles.modalTitle}>你想问什么？</Text>
+
+          {/* Quick questions */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.quickRow}>
+            {QUICK_QUESTIONS.map(q => (
+              <TouchableOpacity
+                key={q}
+                style={styles.quickBtn}
+                onPress={() => handleQuickQuestion(q)}>
+                <Text style={styles.quickText}>{q}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+
+          {/* Custom input */}
+          <View style={styles.inputRow}>
+            <TextInput
+              style={styles.textInput}
+              placeholder="或者自定义问题..."
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              value={inputText}
+              onChangeText={setInputText}
+              onSubmitEditing={handleCustomSubmit}
+              returnKeyType="go"
+              autoFocus
+              multiline={false}
+            />
+            <TouchableOpacity
+              style={[styles.sendBtn, !inputText.trim() && styles.sendBtnDisabled]}
+              onPress={handleCustomSubmit}
+              disabled={!inputText.trim()}>
+              <Icon name="arrow-forward" size={22} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -359,10 +395,78 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     backgroundColor: 'rgba(255,255,255,0.18)',
   },
-  historyLabel: {
-    color: '#fff',
-    fontSize: 11,
-    marginTop: 2,
+  historyLabel: {color: '#fff', fontSize: 11, marginTop: 2},
+  micBtn: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 3,
+    borderColor: '#fff',
   },
+  micBtnDisabled: {opacity: 0.4},
   spacer: {width: 56},
+  // Modal
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  modalSheet: {
+    backgroundColor: '#1a1a2e',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 36,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#fff',
+    marginBottom: 16,
+  },
+  quickRow: {
+    paddingBottom: 16,
+    gap: 8,
+  },
+  quickBtn: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  quickText: {
+    color: '#fff',
+    fontSize: 14,
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  textInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#fff',
+    paddingVertical: 10,
+  },
+  sendBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#e53935',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
+  },
+  sendBtnDisabled: {backgroundColor: 'rgba(229,57,53,0.3)'},
 });
