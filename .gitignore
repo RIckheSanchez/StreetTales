@@ -1,0 +1,43 @@
+# Environment
+.env
+.env.local
+
+# Node
+node_modules/
+npm-debug.log*
+
+# React Native
+.expo/
+dist/
+web-build/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# Android
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+*.keystore
+!debug.keystore
+
+# Metro
+.metro-health-check*
+
+# Jest
+coverage/
+
+# macOS
+.DS_Store
+*.pem
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
